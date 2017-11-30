@@ -1,0 +1,82 @@
+# Aligning
+
+# Bowtie2
+
+bowtie2 -p 10 -x $INDEX -1 raw_data/read_1_filtered.fastq -2 raw_data/read_2_filtered.fastq -S alignments/NA12878.bt2.sam
+
+# BWA Sampe
+
+bwa aln -t 10 genome/hg19.fa raw_data/read_1_filtered.fastq  >  alignments/NA12878.R1.sai
+bwa aln -t 10 genome/hg19.fa raw_data/read_2_filtered.fastq  >  alignments/NA12878.R2.sai
+bwa sampe genome/hg19.fa alignments/NA12878.R1.sai alignments/NA12878.R2.sai raw_data/read_1_filtered.fastq raw_data/read_2_filtered.fastq >  alignments/NA12878.bwa-sampe.sam
+
+# BWA Mem
+
+bwa mem -t 10 genome/hg19.fa raw_data/read_1_filtered.fastq raw_data/read_2_filtered.fastq  >  alignments/NA12878.bwa-mem.sam
+
+# CUSHAW3
+
+cushaw3 align -r $INDEX -t 10 -o alignments/NA12878.CUSHAW3.sam -q raw_data/read_1_filtered.fastq raw_data/read_2_filtered.fastq
+
+# MOSAIK
+
+MosaikBuild -q raw_data/read_1_filtered.fastq -q2 raw_data/read_2_filtered.fastq -st illumina -outalignments/NA12878.MOSAIK.mkb
+
+MosaikAligner -in alignments/NA12878.MOSAIK.mkb -out alignments/NA12878.MOSAIK -p 10 -ia genome/hg19.dat -j genome/hg19_15 -annpe tools/MOSAIK/src/networkFile/2.1.78.pe.ann -annse tools/MOSAIK/src/networkFile/2.1.78.se.ann
+
+# Novoalign
+novoalign -d $INDEX -f raw_data/read_1_filtered.fastq raw_data/read_2_filtered.fastq -o SAM -c 10  > alignments/NA12878.novoalign.sam
+
+# Alignment Depth of Coverage Calculation
+
+java -jar CalculateHsMetrics.jar I=NA12878.ALN.BQSR.bam O=ALN.O.log R=genome/hg19.fa TI=genome/truseq_exome.bed BI=genome/truseq_exome.bed VALIDATION_STRINGENCY=SILENT PER_TARGET_COVERAGE=ALN.ptc.bed
+
+# Alignment File Processing
+
+
+
+# Processing the alignment files (SAM/BAM files) required the following steps for all aligners:
+
+(1)
+SAM to BAM conversion with SAMtools view:
+(a)
+samtools view -bS alignments/NA12878.ALN.sam -o alignments/NA12878.ALN.bam
+(2)
+BAM file sorting using the Picard Tools module, SortSam:
+(a)
+java -jar bin/SortSam.jar VALIDATION_STRINGENCY=SILENT I=alignments/NA12878.ALN.bam OUTPUT=alignments/NA12878.ALN.sorted.bam SORT_ORDER=coordinate
+(3)
+PCR duplicate removal using the Picard Tools module, MarkDuplicates:
+(a)
+java -jar bin/MarkDuplicates.jar VALIDATION_STRINGENCY=SILENT I=alignments/NA12878.ALN.sorted.bam O=alignments/NA12878.ALN.dups_removed.bam REMOVE_DUPLICATES=true M=alignments/metrics
+(4)
+Read Group added to alignment files using the Picard Tools module, AddOrReplaceReadGroups:
+(a)
+java -jar bin/AddOrReplaceReadGroups.jar VALIDATION_STRINGENCY=SILENT I=alignments/NA12878.ALN.dups_removed.bam O=alignments/NA12878.ALN.RG.bam SO=coordinate RGID=NA12878 RGLB=NA12878 RGPL=illumina RGPU=NA12878 RGSM=NA12878 CREATE_INDEX=true
+(5)
+Realignment around indels using the GATK modules RealignerTargetCreator and IndelRealigner:
+(a)
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T RealignerTargetCreator -R genome/hg19.fa -I alignments/NA12878.ALN.RG.bam -known genome/mills.vcf -o tmp/ALN.intervals
+(b)
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T IndelRealigner -R genome/hg19.fa -I alignments/NA12878.ALN.RG.bam -known genome/mills.vcf -o alignments/NA12878.ALN.indels.bam –maxReadsForRealignment 100000 –maxReadsInMemory 1000000 -targetIntervals tmp/ALN.intervals
+(6)
+Base recalibration using the GATK modules BaseRecalibrator and PrintReads:
+(a)
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T BaseRecalibrator -R genome/hg19.fa -I alignments/NA12878.ALN.indels.bam -knownSitesgenome/dbsnp_137.hg19.excluding_sites_after_129.only_standard_chroms.vcf -o tmp/NA12878.ALN.grp
+(b)
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T PrintReads -R genome/hg19.fa -I alignments/NA12878.ALN.indels.bam -BQSR tmp/NA12878.ALN.grp -o alignments/NA12878.ALN.BQSR.bam
+
+# Variant calling
+
+# FreeBayes
+freebayes -f genome/hg19.fa -i -X -u -v vcf_files/NA12878.ALIGNER.freebayes.raw.snv.vcf alignments/NA12878.ALIGNER.BQSR.bam
+freebayes -f genome/hg19.fa -I -X -u -v vcf_files/NA12878.ALIGNER.freebayes.raw.indel.vcf alignments/NA12878.ALIGNER.BQSR.bam
+# GATK HaplotypeCaller
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T HaplotypeCaller -R genome/hg19.fa -I alignments/NA12878.ALIGNER.BQSR.bam –dbsnp $DBSNP -o vcf_files/NA12878.ALIGNER.HC.raw.vcf -stand_call_conf 50
+# GATK UnifiedGenotyper
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T UnifiedGenotyper -R genome/hg19.fa -nt 10 -I alignments/NA12878.ALIGNER.BQSR.bam -o vcf_files/NA12878.ALIGNER.UG.raw.snv.vcf -glm SNP -D $DBSNP
+java -XX:-DoEscapeAnalysis -jar bin/GenomeAnalysisTK.jar -T UnifiedGenotyper -R genome/hg19.fa -nt 10 -I alignments/NA12878.ALIGNER.BQSR.bam -o vcf_files/NA12878.ALIGNER.UG.raw.indel.vcf -glm INDEL -D $MILLS
+# SAMtools Mpileup
+samtools mpileup -uf genome/hg19.faalignments/NA12878.ALIGNER.BQSR.bam  |  bcftools view -bvcg - > vcf_files/NA12878.ALIGNER.mpileup.bcf  &&  bcftools view vcf_files/NA12878.ALIGNER.mpileup.bcf  >  vcf_files/NA12878.ALIGNER.mpileup.raw.vcf
+2.7.5. SNPSVM
+java -XX:ParallelGCThreads=10 -jar tools/SNPSVM/snpsvm.jar predict -R genome/hg19.fa -B alignments/NA12878.ALIGNER.BQSR.bam -M tools/SNPSVM/models/default.model -V vcf_files/NA12878.ALIGNER.SNPSVM.raw.vcf
